@@ -2,6 +2,7 @@
 import torch
 import torch.distributed as dist
 
+from .device import get_torch_device, is_accelerator_available
 from .logging import logger
 from .Simple_Remote_Infer.deploy.websocket_policy_server import WebsocketPolicyServer
 
@@ -26,9 +27,11 @@ def distributed_infer(model, obs, local_rank):
     rank = dist.get_rank()
     assert rank == local_rank, "distributed_infer can only run at（rank 0)"
 
+    device = get_torch_device(local_rank) if is_accelerator_available() else torch.device("cpu")
+
     cmd = torch.tensor(1,
                        dtype=torch.int64,
-                       device='cuda' if torch.cuda.is_available() else 'cpu')
+                       device=device)
     dist.broadcast(cmd, src=0)
 
     obj_list = [obs]
@@ -43,7 +46,7 @@ def worker_loop(model, local_rank):
     """
     TODO
     """
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = get_torch_device(local_rank) if is_accelerator_available() else torch.device("cpu")
     rank = dist.get_rank()
 
     while True:
@@ -74,7 +77,7 @@ def run_async_server_mode(model, local_rank, host, port):
         cmd = torch.tensor(
             -1,
             dtype=torch.int64,
-            device='cuda' if torch.cuda.is_available() else 'cpu')
+            device=get_torch_device(local_rank) if is_accelerator_available() else torch.device("cpu"))
         dist.broadcast(cmd, src=0)
     else:
         try:

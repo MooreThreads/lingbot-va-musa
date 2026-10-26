@@ -4,6 +4,8 @@ import concurrent.futures
 import numpy as np
 import torch
 
+from .device import is_on_accelerator
+
 executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
 __all__ = ['get_mesh_id', 'save_async', 'data_seq_to_patch']
@@ -60,7 +62,7 @@ def save_async(obj, file_path):
     if torch.is_tensor(obj) or (isinstance(obj, dict) and any(
             torch.is_tensor(v) for v in obj.values())):
         if torch.is_tensor(obj):
-            if obj.is_cuda:
+            if is_on_accelerator(obj):
                 obj = obj.cpu()
         elif isinstance(obj, dict):
             obj = {

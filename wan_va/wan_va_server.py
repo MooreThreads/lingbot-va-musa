@@ -2,6 +2,12 @@
 import argparse
 import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from utils.musa_bootstrap import bootstrap_musa
+
+bootstrap_musa()
+
 import time
 from functools import partial
 from PIL import Image
@@ -36,6 +42,7 @@ from utils import (
     run_async_server_mode,
     save_async,
 )
+from utils.device import empty_cache, get_torch_device
 
 
 class VA_Server:
@@ -45,7 +52,7 @@ class VA_Server:
         self.job_config = job_config
         self.save_root = job_config.save_root
         self.dtype = job_config.param_dtype
-        self.device = torch.device(f"cuda:{job_config.local_rank}")
+        self.device = get_torch_device(job_config.local_rank)
         self.enable_offload = getattr(job_config, 'enable_offload', True)  # offload vae & text_encoder to save vram
 
         self.scheduler = FlowMatchScheduler(shift=self.job_config.snr_shift,
@@ -82,7 +89,7 @@ class VA_Server:
                          'transformer'),
             torch_dtype=self.dtype,
             torch_device=self.device,
-            attn_mode="torch"
+            attn_mode=os.environ.get("LINGBOT_INFER_ATTN_MODE", "flashattn")
         )
         shard_fn = shard_model
         self.transformer = _configure_model(model=self.transformer,
@@ -438,7 +445,7 @@ class VA_Server:
         self.exp_name = f"{prompt}_{time.strftime('%Y%m%d_%H%M%S')}" if prompt else "default"
         self.exp_save_root = os.path.join(self.save_root, 'real', self.exp_name)
         os.makedirs(self.exp_save_root, exist_ok=True)
-        torch.cuda.empty_cache()
+        empty_cache()
 
     def _infer(self, obs, frame_st_id=0):
         frame_chunk_size = self.job_config.frame_chunk_size
@@ -566,7 +573,7 @@ class VA_Server:
         save_async(actions, os.path.join(self.exp_save_root, f'actions_{frame_st_id}.pt'))
 
         actions = self.postprocess_action(actions)
-        torch.cuda.empty_cache()
+        empty_cache()
         return actions, latents
 
     def _compute_kv_cache(self, obs):
@@ -600,7 +607,7 @@ class VA_Server:
                              update_cache=2,
                              cache_name=self.cache_name,
                              action_mode=True)
-        torch.cuda.empty_cache()
+        empty_cache()
         self.frame_st_id += latent_model_input.shape[2]
 
     @torch.no_grad()
@@ -665,7 +672,7 @@ class VA_Server:
         del self.transformer
         del self.streaming_vae_half
         del self.text_encoder
-        torch.cuda.empty_cache()
+        empty_cache()
         
         # Move VAE to GPU for decoding
         if self.enable_offload:
@@ -677,6 +684,15 @@ class VA_Server:
 def run(args):    
     
     config = VA_CONFIGS[args.config_name]
+    model_path = os.environ.get("LINGBOT_MODEL_PATH")
+    if model_path:
+        config.wan22_pretrained_model_name_or_path = model_path
+    video_steps = os.environ.get("LINGBOT_VIDEO_STEPS")
+    if video_steps is not None:
+        config.num_inference_steps = int(video_steps)
+    action_steps = os.environ.get("LINGBOT_ACTION_STEPS")
+    if action_steps is not None:
+        config.action_num_inference_steps = int(action_steps)
     port = config.port if args.port is None else args.port
     if args.save_root is not None:
         config.save_root = args.save_root

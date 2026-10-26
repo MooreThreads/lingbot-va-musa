@@ -1,0 +1,158 @@
+{
+  "mode": "dataset_observation_infer_only",
+  "label": "base_v5_a10_flashattn_gpu1_reset_each",
+  "port": 29057,
+  "dataset_root": "/workspace/lingbot-va/datasets/robotwin-clean-and-aug-lerobot/lerobot_robotwin_eef_aug_500/press_stapler-aloha-agilex_randomized_500-1000",
+  "episode": 2,
+  "frame_id": 0,
+  "task": "press stapler",
+  "warmup": 1,
+  "runs": 5,
+  "initial_reset_client_wall_s": 0.20939629600616172,
+  "initial_reset_server_infer_s": 0.2090756749967113,
+  "per_run_reset_note": "each measured infer resets streaming cache first; reset time is reported separately and excluded from infer stats",
+  "reset_client_wall": {
+    "mean_s": 0.2076924276072532,
+    "median_s": 0.20766046902281232,
+    "min_s": 0.20725165199837647,
+    "max_s": 0.20815890101948753
+  },
+  "reset_server_infer": {
+    "mean_s": 0.20735798160312696,
+    "median_s": 0.20732655300525948,
+    "min_s": 0.20693119600764476,
+    "max_s": 0.20781645001261495
+  },
+  "client_wall": {
+    "mean_s": 2.451055072399322,
+    "median_s": 2.449087357003009,
+    "min_s": 2.4477111370069906,
+    "max_s": 2.455286671000067
+  },
+  "server_infer": {
+    "mean_s": 2.4464650433976205,
+    "median_s": 2.4445200199843384,
+    "min_s": 2.443303003004985,
+    "max_s": 2.4510781680000946
+  },
+  "action_shape": [
+    16,
+    2,
+    16
+  ],
+  "low_level_actions_per_full_chunk": 32,
+  "low_level_actions_first_chunk": 16,
+  "full_chunk_hz_from_server_mean": 13.080096969445677,
+  "first_chunk_hz_from_server_mean": 6.540048484722838,
+  "all_action_finite": true,
+  "records": [
+    {
+      "iter": 0,
+      "phase": "warmup",
+      "reset_client_wall_s": 0.20729878099518828,
+      "reset_server_infer_s": 0.20680198099580593,
+      "client_wall_s": 2.455696186021669,
+      "server_infer_s": 2.4510156710166484,
+      "server_prev_total_s": 0.207329283002764,
+      "action_shape": [
+        16,
+        2,
+        16
+      ],
+      "action_finite": true,
+      "action_min": -0.21342560648918152,
+      "action_max": 1.0312509536743164,
+      "action_mean": 0.17508387565612793
+    },
+    {
+      "iter": 1,
+      "phase": "measure",
+      "reset_client_wall_s": 0.20815890101948753,
+      "reset_server_infer_s": 0.20781645001261495,
+      "client_wall_s": 2.4477111370069906,
+      "server_infer_s": 2.443303003004985,
+      "server_prev_total_s": 0.20853626399184577,
+      "action_shape": [
+        16,
+        2,
+        16
+      ],
+      "action_finite": true,
+      "action_min": -0.2058296501636505,
+      "action_max": 1.0312509536743164,
+      "action_mean": 0.1338815689086914
+    },
+    {
+      "iter": 2,
+      "phase": "measure",
+      "reset_client_wall_s": 0.20725165199837647,
+      "reset_server_infer_s": 0.20693119600764476,
+      "client_wall_s": 2.4479075220006052,
+      "server_infer_s": 2.44398823499796,
+      "server_prev_total_s": 0.2075332350214012,
+      "action_shape": [
+        16,
+        2,
+        16
+      ],
+      "action_finite": true,
+      "action_min": -0.1944357007741928,
+      "action_max": 1.0312509536743164,
+      "action_mean": 0.15270383656024933
+    },
+    {
+      "iter": 3,
+      "phase": "measure",
+      "reset_client_wall_s": 0.20762628500233404,
+      "reset_server_infer_s": 0.20732655300525948,
+      "client_wall_s": 2.455286671000067,
+      "server_infer_s": 2.449435791000724,
+      "server_prev_total_s": 0.2078861269983463,
+      "action_shape": [
+        16,
+        2,
+        16
+      ],
+      "action_finite": true,
+      "action_min": -0.2065892517566681,
+      "action_max": 1.0312509536743164,
+      "action_mean": 0.17010006308555603
+    },
+    {
+      "iter": 4,
+      "phase": "measure",
+      "reset_client_wall_s": 0.20766046902281232,
+      "reset_server_infer_s": 0.207315829989966,
+      "client_wall_s": 2.449087357003009,
+      "server_infer_s": 2.4445200199843384,
+      "server_prev_total_s": 0.20792167997569777,
+      "action_shape": [
+        16,
+        2,
+        16
+      ],
+      "action_finite": true,
+      "action_min": -0.20810844004154205,
+      "action_max": 1.0312509536743164,
+      "action_mean": 0.17478790879249573
+    },
+    {
+      "iter": 5,
+      "phase": "measure",
+      "reset_client_wall_s": 0.2077648309932556,
+      "reset_server_infer_s": 0.20739987900014967,
+      "client_wall_s": 2.4552826749859378,
+      "server_infer_s": 2.4510781680000946,
+      "server_prev_total_s": 0.2080862520087976,
+      "action_shape": [
+        16,
+        2,
+        16
+      ],
+      "action_finite": true,
+      "action_min": -0.2103872299194336,
+      "action_max": 1.0156259536743164,
+      "action_mean": 0.1703529953956604
+    }
+  ]
+}

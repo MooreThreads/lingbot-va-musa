@@ -1,10 +1,18 @@
 # Copyright 2024-2025 The Robbyant Team Authors. All rights reserved.
 import argparse
+import copy
 import os
 import sys
+import time
+from functools import partial
 from pathlib import Path
-import wandb
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from utils.musa_bootstrap import bootstrap_musa
+
+bootstrap_musa()
+
+import wandb
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -18,8 +26,7 @@ from torch.distributed.checkpoint.state_dict import (
 )
 from safetensors.torch import save_file, load_file
 import json
-
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+import shutil
 
 from configs import VA_CONFIGS
 from distributed.fsdp import shard_model, apply_ac
@@ -42,8 +49,15 @@ from utils import (
     warmup_constant_lambda,
     FlowMatchScheduler
 )
+from utils.device import (
+    default_attn_mode,
+    empty_cache,
+    get_torch_device,
+    is_musa,
+    synchronize,
+)
 
-from dataset import MultiLatentLeRobotDataset
+from dataset import MultiLatentLeRobotDataset, collate_fixed_latent_frames
 import gc
 
 
@@ -64,7 +78,7 @@ class Trainer:
             logger.info("WandB logging enabled")
         self.step = 0
         self.config = config
-        self.device = torch.device(f"cuda:{config.local_rank}")
+        self.device = get_torch_device(config.local_rank)
         self.dtype = config.param_dtype
         self.patch_size = config.patch_size
 
@@ -85,7 +99,7 @@ class Trainer:
             transformer_path,
             torch_dtype=torch.float32,
             torch_device='cpu',
-            attn_mode="flex"
+            attn_mode=getattr(config, "attn_mode", default_attn_mode("flex"))
         )
 
         logger.info("Setting up activation checkpointing ...")
@@ -104,14 +118,19 @@ class Trainer:
         self.transformer.requires_grad_(True)
 
         # Optimizer
-        self.optimizer = torch.optim.AdamW(
-            [p for p in self.transformer.parameters() if p.requires_grad],
+        parameters = [p for p in self.transformer.parameters() if p.requires_grad]
+        if is_musa():
+            from torch_musa.optim import FusedAdamW
+
+            optimizer_cls = FusedAdamW
+        else:
+            optimizer_cls = torch.optim.AdamW
+        self.optimizer = optimizer_cls(
+            parameters,
             lr=config.learning_rate,
             betas=(config.beta1, config.beta2),
             eps=1e-8,
             weight_decay=config.weight_decay,
-            fused=True,
-            foreach=False,
         )
 
         self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, 
@@ -119,7 +138,12 @@ class Trainer:
 
         # Setup dataloaders
         logger.info("Setting up datasets...")
-        train_dataset = MultiLatentLeRobotDataset(config=config)
+        train_dataset = MultiLatentLeRobotDataset(
+            config=config,
+            num_init_worker=getattr(config, "dataset_init_worker", 128),
+        )
+        if len(train_dataset) == 0:
+            raise ValueError(f"No training samples found under {config.dataset_path}")
         train_sampler = DistributedSampler(
             train_dataset,
             num_replicas=config.world_size,
@@ -133,6 +157,12 @@ class Trainer:
             shuffle=(train_sampler is None), 
             num_workers=config.load_worker,
             sampler=train_sampler,
+            drop_last=True,
+            collate_fn=(
+                partial(collate_fixed_latent_frames, target_frames=config.train_latent_frames)
+                if config.get('train_latent_frames') is not None
+                else None
+            ),
         )
 
         self.train_scheduler_latent = FlowMatchScheduler(shift=self.config.snr_shift, sigma_min=0.0, extra_one_step=True)
@@ -308,6 +338,12 @@ class Trainer:
 
         output = self.transformer(input_dict, train_mode=True)
         latent_loss, action_loss = self.compute_loss(input_dict, output)
+        if not torch.isfinite(latent_loss) or not torch.isfinite(action_loss):
+            raise FloatingPointError(
+                f"Non-finite loss at step {self.step}: "
+                f"latent_loss={latent_loss.detach().float().item()}, "
+                f"action_loss={action_loss.detach().float().item()}"
+            )
         loss = latent_loss + action_loss
 
         loss.backward()
@@ -317,6 +353,11 @@ class Trainer:
         # Only update weights after accumulating gradients
         if should_sync:
             total_norm = torch.nn.utils.clip_grad_norm_(self.transformer.parameters(), 2.0)
+            if not torch.isfinite(total_norm):
+                raise FloatingPointError(
+                    f"Non-finite gradient norm at step {self.step}: "
+                    f"total_norm={total_norm.detach().float().item()}"
+                )
             self.optimizer.step()
             self.lr_scheduler.step()
             self.optimizer.zero_grad()
@@ -329,64 +370,129 @@ class Trainer:
         return losses
 
     def save_checkpoint(self,):
-        """Save model checkpoint in the same format as pretrained model."""
+        """Gather and atomically publish a validated transformer checkpoint."""
+        state_dict = {}
+        gather_error = None
+        if dist.is_initialized():
+            dist.barrier()
         try:
             state_dict = get_model_state_dict(
                 self.transformer,
                 options=StateDictOptions(full_state_dict=True, cpu_offload=True),
             )
-            state_dict_bf16 = {k: v.to(torch.bfloat16) for k, v in state_dict.items()}
-            # optim_state = get_optimizer_state_dict(
-            #         self.transformer, self.optimizer,
-            #         options=StateDictOptions(full_state_dict=True, cpu_offload=True),
-            #     )
+        except Exception as exc:
+            gather_error = exc
 
-            # Only rank 0 saves the checkpoint
-            if self.config.rank == 0:
-                checkpoint_dir = self.save_dir / f"checkpoint_step_{self.step}"
-                checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        if dist.is_initialized():
+            gather_status = torch.tensor(
+                [0 if gather_error is not None else 1],
+                dtype=torch.int32,
+                device=self.device,
+            )
+            dist.all_reduce(gather_status, op=dist.ReduceOp.MIN)
+            if gather_status.item() == 0:
+                raise RuntimeError("Checkpoint state gathering failed") from gather_error
+        elif gather_error is not None:
+            raise RuntimeError("Checkpoint state gathering failed") from gather_error
 
-                # Save transformer in the same format as pretrained model
-                transformer_dir = checkpoint_dir / "transformer"
-                transformer_dir.mkdir(parents=True, exist_ok=True)
+        save_error = None
+        if self.config.rank == 0:
+            checkpoint_dir = self.save_dir / f"checkpoint_step_{self.step}"
+            temp_dir = self.save_dir / f".checkpoint_step_{self.step}.tmp-{os.getpid()}"
+            try:
+                if checkpoint_dir.exists():
+                    raise FileExistsError(f"Checkpoint already exists: {checkpoint_dir}")
+                if temp_dir.exists():
+                    shutil.rmtree(temp_dir)
+                transformer_dir = temp_dir / "transformer"
+                transformer_dir.mkdir(parents=True, exist_ok=False)
+                logger.info("Saving transformer to %s", transformer_dir)
 
-                logger.info(f"Saving transformer to {transformer_dir}")
+                # Keep individual safetensors shards bounded. Building one 10GB
+                # BF16 dictionary duplicates the gathered full state in memory.
+                shard_limit = 2 * 1024**3
+                shard_index = 1
+                shard_bytes = 0
+                shard_state = {}
+                weight_map = {}
+                total_size = 0
 
-                # Manually save in diffusers format (outside FSDP context to avoid deadlock)
-                # Save model weights
-                model_file = transformer_dir / "diffusion_pytorch_model.safetensors"
-                save_file(state_dict_bf16, model_file)
+                def flush_shard():
+                    nonlocal shard_index, shard_bytes, shard_state
+                    if not shard_state:
+                        return
+                    filename = (
+                        f"diffusion_pytorch_model-{shard_index:05d}.of-00000.safetensors"
+                    )
+                    save_file(shard_state, transformer_dir / filename)
+                    shard_index += 1
+                    shard_bytes = 0
+                    shard_state = {}
 
-                # Save config (copy from original transformer config and update _name_or_path)
+                for key, value in state_dict.items():
+                    tensor = value.to(torch.bfloat16)
+                    if not torch.isfinite(tensor).all():
+                        raise RuntimeError(f"Non-finite tensor in checkpoint: {key}")
+                    tensor_bytes = tensor.numel() * tensor.element_size()
+                    if shard_state and shard_bytes + tensor_bytes > shard_limit:
+                        flush_shard()
+                    shard_state[key] = tensor
+                    weight_map[key] = (
+                        f"diffusion_pytorch_model-{shard_index:05d}.of-00000.safetensors"
+                    )
+                    shard_bytes += tensor_bytes
+                    total_size += tensor_bytes
+                flush_shard()
+
+                shard_count = shard_index - 1
+                if shard_count == 1:
+                    old_name = transformer_dir / "diffusion_pytorch_model-00001.of-00000.safetensors"
+                    model_file = transformer_dir / "diffusion_pytorch_model.safetensors"
+                    old_name.rename(model_file)
+                    weight_map = {key: model_file.name for key in weight_map}
+                else:
+                    for path in transformer_dir.glob("diffusion_pytorch_model-*.of-00000.safetensors"):
+                        path.rename(path.with_name(path.name.replace("of-00000", f"of-{shard_count:05d}")))
+                    weight_map = {
+                        key: name.replace("of-00000", f"of-{shard_count:05d}")
+                        for key, name in weight_map.items()
+                    }
+                    with (transformer_dir / "diffusion_pytorch_model.safetensors.index.json").open("w") as file:
+                        json.dump({"metadata": {"total_size": total_size}, "weight_map": weight_map}, file, indent=2)
+
                 config_file = transformer_dir / "config.json"
                 config_dict = dict(self.transformer.config)
                 config_dict.pop('_name_or_path', None)
-                with open(config_file, 'w') as f:
-                    json.dump(config_dict, f, indent=2)
+                with config_file.open('w') as file:
+                    json.dump(config_dict, file, indent=2)
+                    file.flush()
+                    os.fsync(file.fileno())
 
-                # # Save optimizer state and training metadata in PyTorch format
-                # training_state_path = checkpoint_dir / "training_state.pt"
-                # logger.info(f"Saving training state to {training_state_path}")
-                # torch.save({
-                #     'step': self.step,
-                #     'optimizer_state_dict': optim_state,
-                #     'config': vars(self.config),
-                # }, training_state_path)
-
-                logger.info(f"Checkpoint saved successfully at step {self.step}")
-
-            # Synchronize all processes after saving
-            if dist.is_initialized():
-                dist.barrier()
-
-        except Exception as e:
-            if self.config.rank == 0:
-                logger.error(f"Failed to save checkpoint: {e}")
+                if not config_file.is_file() or not any(transformer_dir.glob("*.safetensors")):
+                    raise RuntimeError("Checkpoint files were not created")
+                with config_file.open() as file:
+                    json.load(file)
+                os.replace(temp_dir, checkpoint_dir)
+                logger.info("Checkpoint saved and validated successfully at step %s", self.step)
+            except Exception as exc:
+                save_error = exc
+                if temp_dir.exists():
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                logger.error("Failed to save checkpoint: %s", exc)
                 import traceback
                 logger.error(traceback.format_exc())
-            # Ensure all processes stay synchronized even on error
-            if dist.is_initialized():
-                dist.barrier()
+
+        if dist.is_initialized():
+            save_status = torch.tensor(
+                [0 if save_error is not None else 1],
+                dtype=torch.int32,
+                device=self.device,
+            )
+            dist.all_reduce(save_status, op=dist.ReduceOp.MIN)
+            if save_status.item() == 0:
+                raise RuntimeError("Checkpoint save or validation failed") from save_error
+        elif save_error is not None:
+            raise RuntimeError("Checkpoint save or validation failed") from save_error
 
     def _load_training_state(self, checkpoint_path):
         """Load training state (optimizer + step) after FSDP and optimizer creation."""
@@ -437,8 +543,11 @@ class Trainer:
         accumulated_latent_losses = []
         accumulated_action_losses = []
         step_in_accumulation = 0
+        optimizer_step_started = None
 
         while self.step < self.config.num_steps:
+            if step_in_accumulation == 0:
+                optimizer_step_started = time.perf_counter()
             # Get next batch (handles epoch reset automatically)
             batch = self._get_next_batch()
             
@@ -464,9 +573,10 @@ class Trainer:
                 accumulated_action_losses = []
                 step_in_accumulation = 0
 
-                torch.cuda.synchronize()
+                synchronize()
+                step_time = time.perf_counter() - optimizer_step_started
                 if self.step % self.config.gc_interval == 0:
-                    torch.cuda.empty_cache()
+                    empty_cache()
                     gc.collect()
 
                 if self.config.rank == 0:
@@ -477,8 +587,17 @@ class Trainer:
                         'action_loss': f'{action_loss_show:.4f}',
                         'step': self.step,
                         'grad_norm': f'{total_norm.item():.2f}',
-                        'lr': f'{lr:.2e}'
+                        'lr': f'{lr:.2e}',
+                        'step_time': f'{step_time:.3f}s',
                     })
+                    logger.info(
+                        "PERF step=%d step_time=%.6f mbs=%d world_size=%d global_batch=%d",
+                        self.step,
+                        step_time,
+                        self.config.batch_size,
+                        self.config.world_size,
+                        self.config.batch_size * self.config.world_size * self.gradient_accumulation_steps,
+                    )
                     if self.config.enable_wandb:
                         self.wandb.log({
                             'loss_metrics/global_avg_video_loss': latent_loss_show,
@@ -505,13 +624,36 @@ class Trainer:
 
 def run(args):
     """Main entry point."""
-    config = VA_CONFIGS[args.config_name]
+    config = copy.deepcopy(VA_CONFIGS[args.config_name])
+    overrides = {
+        "dataset_path": args.dataset_path,
+        "wan22_pretrained_model_name_or_path": args.pretrained_model_path,
+        "num_steps": args.num_steps,
+        "batch_size": args.batch_size,
+        "dataset_init_worker": args.dataset_init_worker,
+        "load_worker": args.load_worker,
+        "gradient_accumulation_steps": args.gradient_accumulation_steps,
+        "save_interval": args.save_interval,
+        "cfg_prob": args.cfg_prob,
+        "attn_mode": args.attn_mode,
+    }
+    for name, value in overrides.items():
+        if value is not None:
+            config[name] = value
+    if config.get("dataset_path"):
+        config.empty_emb_path = os.path.join(config.dataset_path, 'empty_emb.pt')
+    if args.disable_wandb:
+        config.enable_wandb = False
 
     rank = int(os.getenv("RANK", 0))
     local_rank = int(os.environ.get('LOCAL_RANK', 0))
     world_size = int(os.environ.get("WORLD_SIZE", 1))
 
     init_distributed(world_size, local_rank, rank)
+
+    seed = os.environ.get("LINGBOT_SEED")
+    if seed is not None:
+        torch.manual_seed(int(seed) + rank)
 
     config.rank = rank
     config.local_rank = local_rank
@@ -536,6 +678,71 @@ def main():
         type=str,
         default='robotwin_train',
         help="Config name",
+    )
+    parser.add_argument(
+        "--dataset-path",
+        type=str,
+        default=None,
+        help="Override the configured training dataset root",
+    )
+    parser.add_argument(
+        "--pretrained-model-path",
+        type=str,
+        default=None,
+        help="Override the configured Wan2.2 pretrained model root",
+    )
+    parser.add_argument(
+        "--num-steps",
+        type=int,
+        default=None,
+        help="Override the number of optimizer steps",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Override the per-rank micro batch size",
+    )
+    parser.add_argument(
+        "--dataset-init-worker",
+        type=int,
+        default=None,
+        help="Override the dataset metadata initialization worker count",
+    )
+    parser.add_argument(
+        "--load-worker",
+        type=int,
+        default=None,
+        help="Override the DataLoader worker count",
+    )
+    parser.add_argument(
+        "--gradient-accumulation-steps",
+        type=int,
+        default=None,
+        help="Override the number of batches per optimizer step",
+    )
+    parser.add_argument(
+        "--save-interval",
+        type=int,
+        default=None,
+        help="Override the checkpoint save interval",
+    )
+    parser.add_argument(
+        "--cfg-prob",
+        type=float,
+        default=None,
+        help="Override classifier-free text dropout probability",
+    )
+    parser.add_argument(
+        "--attn-mode",
+        choices=("flex", "torch", "flashattn"),
+        default=None,
+        help="Override the transformer attention implementation",
+    )
+    parser.add_argument(
+        "--disable-wandb",
+        action="store_true",
+        help="Disable WandB logging for this run",
     )
     parser.add_argument(
         "--save-root",

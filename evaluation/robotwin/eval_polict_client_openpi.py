@@ -6,7 +6,12 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 import cv2
 from pathlib import Path
 
-robowin_root = Path("/path/to/your/robowin")
+robowin_root = Path(
+    os.environ.get(
+        "ROBOTWIN_ROOT",
+        Path(__file__).resolve().parents[2] / "third_party" / "RoboTwin",
+    )
+)
 if str(robowin_root) not in sys.path:
     sys.path.insert(0, str(robowin_root))
 
@@ -697,4 +702,3 @@ if __name__ == "__main__":
     Sapien_TEST()
     usr_args = parse_args_and_config()
     main(usr_args)
-

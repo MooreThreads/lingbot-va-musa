@@ -12,8 +12,34 @@ from functools import partial
 import torch
 from einops import rearrange
 from torch.utils.data import DataLoader
+from torch.utils.data._utils.collate import default_collate
 from scipy.spatial.transform import Rotation as R
 from lerobot.constants import HF_LEROBOT_HOME
+
+
+def collate_fixed_latent_frames(batch, target_frames):
+    aligned = []
+    for sample in batch:
+        sample = dict(sample)
+        latent_frames = sample['latents'].shape[1]
+        if latent_frames < target_frames:
+            pad_frames = target_frames - latent_frames
+            latent_pad = sample['latents'][:, -1:].expand(-1, pad_frames, -1, -1)
+            sample['latents'] = torch.cat((sample['latents'], latent_pad), dim=1)
+            action_shape = list(sample['actions'].shape)
+            action_shape[1] = pad_frames
+            sample['actions'] = torch.cat(
+                (sample['actions'], sample['actions'].new_zeros(action_shape)), dim=1
+            )
+            sample['actions_mask'] = torch.cat(
+                (sample['actions_mask'], sample['actions_mask'].new_zeros(action_shape)), dim=1
+            )
+        elif latent_frames > target_frames:
+            sample['latents'] = sample['latents'][:, :target_frames]
+            sample['actions'] = sample['actions'][:, :target_frames]
+            sample['actions_mask'] = sample['actions_mask'][:, :target_frames]
+        aligned.append(sample)
+    return default_collate(aligned)
 
 def recursive_find_file(directory, filename='info.json'):
     result = []
@@ -47,6 +73,8 @@ def construct_lerobot_multi_processor(config,
     )
     repo_list = recursive_find_file(config.dataset_path, 'info.json')
     repo_list = [v.split('/meta/info.json')[0] for v in repo_list]
+    if num_init_worker <= 1:
+        return [construct_func(repo_id) for repo_id in repo_list]
     with Pool(num_init_worker) as pool:
         datasets_out_lst = pool.map(construct_func, repo_list)
                 
@@ -142,9 +170,13 @@ class LatentLeRobotDataset(LeRobotDataset):
         self.episode_data_index = get_episode_data_index(self.meta.episodes, self.episodes)
         
         self.latent_path = Path(repo_id) / 'latents'
-        self.empty_emb = torch.load(config.empty_emb_path, weights_only=False)
         self.config = config
         self.cfg_prob = config.cfg_prob
+        self.empty_emb = (
+            torch.load(config.empty_emb_path, weights_only=False)
+            if self.cfg_prob > 0
+            else None
+        )
         self.used_video_keys = config.obs_cam_keys
         self.q01 = np.array(config.norm_stat['q01'], dtype='float')[None]
         self.q99 = np.array(config.norm_stat['q99'], dtype='float')[None]

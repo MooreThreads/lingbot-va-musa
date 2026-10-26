@@ -1,1 +1,87 @@
-*.pyc
+# Python cache/build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Logs and runtime outputs
+*.log
+*.out
+*.err
+nohup.out
+wandb/
+runs/
+tensorboard/
+outputs/
+output/
+train_out/
+infer_out/
+
+# Checkpoints, models, and datasets
+checkpoints/
+models/
+datasets/
+data/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+
+# Local editor/agent state
+.cursor/
+.claude/
+
+# Temporary office/draw.io lock files
+.$*
+*.drawio.bkp
+*.drawio.dtmp
+lingbot_va_model_architecture.drawio
+
+# Crash/system artifacts
+*.mudmp
+core
+core_*
+.DS_Store
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Additional model weights and generated runtime artifacts
+*.onnx
+*.engine
+*.torch
+*.pkl
+*.pickle
+*.h5
+*.hdf5
+*.lmdb/
+events.out.tfevents.*
+*.tfevents
+run-artifacts/
+results/
+*.jsonl
+*.npy
+*.npz
+*.mp4
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+
+# Local credentials and temporary files
+.netrc
+credentials.json
+*.pem
+*.key
+slurm-*.out
+*.bak
+*.orig
+*.rej
+*.tmp
