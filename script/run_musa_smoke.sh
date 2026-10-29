@@ -3,7 +3,10 @@ set -euo pipefail
 
 
 export LINGBOT_DEVICE=musa
-LINGBOT_ROOT=${LINGBOT_ROOT:-/workspace/lingbot-va-s5000}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_LINGBOT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+LINGBOT_ROOT=${LINGBOT_ROOT:-${DEFAULT_LINGBOT_ROOT}}
+export LINGBOT_ROOT
 export PYTHONPATH="${LINGBOT_ROOT}/wan_va:${PYTHONPATH:-}"
 
 cd "${LINGBOT_ROOT}"
@@ -11,7 +14,7 @@ cd "${LINGBOT_ROOT}"
 python3 - <<'PY'
 import sys
 import os
-sys.path.insert(0, os.path.join(os.environ.get("LINGBOT_ROOT", "/workspace/lingbot-va-s5000"), "wan_va"))
+sys.path.insert(0, os.path.join(os.environ["LINGBOT_ROOT"], "wan_va"))
 from utils.musa_bootstrap import bootstrap_musa
 bootstrap_musa()
 

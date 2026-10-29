@@ -31,7 +31,10 @@ torchft_lighthouse=${TORCHFT_LIGHTHOUSE}
 config_name=${CONFIG_NAME}
 
 export TOKENIZERS_PARALLELISM=false
-LINGBOT_ROOT=${LINGBOT_ROOT:-/workspace/lingbot-va-s5000}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_LINGBOT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+LINGBOT_ROOT=${LINGBOT_ROOT:-${DEFAULT_LINGBOT_ROOT}}
+export LINGBOT_ROOT
 export PYTHONPATH="${LINGBOT_ROOT}/wan_va:${PYTHONPATH:-}"
 cd "${LINGBOT_ROOT}/wan_va"
 

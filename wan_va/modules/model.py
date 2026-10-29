@@ -19,7 +19,6 @@ from einops import rearrange
 from typing import Callable, ClassVar
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.nn.attention.flex_attention import (
-    _mask_mod_signature,
     BlockMask,
     create_block_mask,
     flex_attention,
@@ -977,10 +976,10 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin):
         else:
             latent_hidden_states = rearrange(latent_hidden_states,
                                                  '1 (b l) (n c) -> b (l n) c',
-                                                 n=math.prod(self.patch_size), b=batch_size)  #
+                                                 n=math.prod(self.patch_size), b=batch_size)
             action_hidden_states = rearrange(action_hidden_states,
                                                  '1 (b l) c -> b l c',
-                                                 b=batch_size)  #
+                                                 b=batch_size)
 
         return latent_hidden_states, action_hidden_states
 
@@ -1066,7 +1065,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin):
             latent_hidden_states = self.proj_out(latent_hidden_states)
             latent_hidden_states = rearrange(latent_hidden_states,
                                              'b l (n c) -> b (l n) c',
-                                             n=math.prod(self.patch_size))  #
+                                             n=math.prod(self.patch_size))
 
         return latent_hidden_states
 
